@@ -15,6 +15,35 @@
 #include <future>
 #include "TestUtilities.h"
 
+//==============================================================================
+// Detect TSan at compile time.  Under TSan, libclang_rt.tsan_cxx is linked
+// whole-archive on Linux and provides its own *strong* definitions of the
+// global operator new/delete family.  If we also define them here we get a
+// "multiple definition" linker error.  Guard them away under TSan; TSan still
+// observes all allocations via its malloc interceptors, so only pluginval's
+// own allocation-violation tracking is lost in TSan builds.
+//
+// Note: upstream Tracktion/pluginval has the same unguarded definitions.
+// Their sanitizer CI presumably runs only on macOS where sanitizer runtimes
+// are dylibs and symbol interposition (not whole-archive) is used, so the
+// collision never surfaces there.
+#if defined(__has_feature)
+ #if __has_feature(thread_sanitizer)
+  #define PLUGINVAL_DISABLE_ALLOCATION_TRACKING 1
+ #endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+ #define PLUGINVAL_DISABLE_ALLOCATION_TRACKING 1
+#endif
+
+#if JUCE_CLANG
+ #define ATTRIBUTE_USED __attribute__((used))
+#else
+ #define ATTRIBUTE_USED
+#endif
+
+#if !defined(PLUGINVAL_DISABLE_ALLOCATION_TRACKING)
+
 inline bool logAllocationViolationIfNotAllowed()
 {
     auto& ai = getAllocatorInterceptor();
@@ -59,13 +88,6 @@ inline bool throwIfRequiredAndReturnShouldLog()
 
     return false;
 }
-
-//==============================================================================
-#if JUCE_CLANG
- #define ATTRIBUTE_USED __attribute__((used))
-#else
- #define ATTRIBUTE_USED
-#endif
 
 ATTRIBUTE_USED void* operator new (std::size_t sz)
 {
@@ -121,7 +143,9 @@ void operator delete[] (void* ptr, size_t) noexcept
 
     std::free (ptr);
 }
-#endif
+#endif // JUCE_CXX14_IS_AVAILABLE
+
+#endif // !PLUGINVAL_DISABLE_ALLOCATION_TRACKING
 
 //==============================================================================
 std::atomic<AllocatorInterceptor::ViolationBehaviour> AllocatorInterceptor::violationBehaviour (ViolationBehaviour::logToCerr);
